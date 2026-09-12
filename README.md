@@ -7,14 +7,17 @@ only short status messages and sanitized compiler diagnostics.
 
 ## Required secret
 
-Create a repository secret named `SOURCE_ACCESS_TOKEN`. Use a narrowly scoped
-GitHub App or fine-grained token that can read the selected source repository.
+This workflow is currently configured for the `GeflechtEQ` project. Create a
+repository secret named `GEFLECHTEQ` using a fine-grained token restricted to
+the `Nanoth-del/GeflechtEQ` repository with only the permissions needed for
+this run: `Contents: Read and write`. The workflow uses this one secret for
+both private-source checkout and Release publication because the project owner
+explicitly accepted that shared-token boundary.
 
-If `publish_release` is enabled, also create `RELEASE_ACCESS_TOKEN` with the
-minimum permission needed to create a release in the selected
-`release_repository`. Keeping source-read and release-write credentials
-separate is recommended; the same token can be used only when the project
-owner deliberately accepts that broader scope.
+Using separate source-read and release-write credentials is safer and remains
+recommended for a general-purpose builder. If this repository is reused for
+other projects, restore separate least-privilege secrets and keep the builder
+private or protect the job with a reviewed environment.
 
 Do not use a broad personal token when this repository is public. Anyone who
 can start the workflow could otherwise choose a repository that the token can

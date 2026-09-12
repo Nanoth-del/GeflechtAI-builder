@@ -61,7 +61,7 @@ jobs:
         env:
           SOURCE_REPOSITORY: ${{ inputs.source_repository }}
           SOURCE_REF: ${{ inputs.source_ref }}
-          SOURCE_TOKEN: ${{ secrets.SOURCE_ACCESS_TOKEN }}
+          SOURCE_TOKEN: ${{ secrets.GEFLECHTEQ }}
         shell: bash
         run: |
           set -euo pipefail
@@ -70,7 +70,7 @@ jobs:
           source_path="$GITHUB_WORKSPACE/private-source"
 
           if [[ -z "$SOURCE_TOKEN" ]]; then
-            echo "::error::SOURCE_ACCESS_TOKEN is not configured."
+            echo "::error::GEFLECHTEQ is not configured."
             exit 1
           fi
 
@@ -393,14 +393,14 @@ jobs:
         if: inputs.publish_release
         env:
           APP_NAME: ${{ inputs.app_name }}
-          RELEASE_TOKEN: ${{ secrets.RELEASE_ACCESS_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.GEFLECHTEQ }}
           RELEASE_REPOSITORY: ${{ steps.project.outputs.release_repository }}
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ -z "$RELEASE_TOKEN" ]]; then
-            echo "::error::RELEASE_ACCESS_TOKEN is not configured."
+            echo "::error::GEFLECHTEQ is not configured."
             exit 1
           fi
 
