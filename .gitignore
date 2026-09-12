@@ -1,0 +1,11 @@
+# Local or accidentally copied confidential build material
+.env
+.env.*
+*.ipa
+*.xcarchive/
+*.xcresult/
+*.dSYM/
+DerivedData/
+private-source/
+*.log
+.DS_Store
