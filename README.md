@@ -17,23 +17,18 @@ The IPA necessarily retains runtime bundle metadata required by iOS, such as
 the bundle identifier, app name, and version. It is not a signed or installable
 distribution artifact; re-sign it privately before installation.
 
-## Required one-time GitHub configuration
+## Required existing credential
 
-Before dispatching, create an environment named `private-release` in this
-repository. Limit it to the `main` branch and protect approval according to
-your collaboration model. Store these **environment secrets** there, not as
-repository secrets:
+The current public controller uses the pre-existing repository secret
+`GEFLECHTEQ`. The workflow is fixed to one source and one private Release
+destination, so the secret cannot be redirected through dispatch inputs.
+Never paste its value into source, workflow inputs, release notes, issues, or
+Actions logs.
 
-- `SOURCE_ACCESS_TOKEN`: fine-grained token restricted to the private source
-  repository with **Contents: Read** only.
-- `RELEASE_WRITE_TOKEN`: separate fine-grained token restricted to the same
-  repository with only the permissions required to create the private
-  prerelease and upload its asset.
-
-After migration, remove the legacy shared repository secret rather than
-keeping a read/write credential available to every workflow in this public
-repository. Never paste a token into source, workflow inputs, release notes,
-issues, or Actions logs.
+This shared read/write credential is an explicitly accepted operational
+boundary for the current release. A future hardening pass can split it into
+separate source-read and Release-write environment secrets once those values
+are available for migration.
 
 ## Dispatch contract
 

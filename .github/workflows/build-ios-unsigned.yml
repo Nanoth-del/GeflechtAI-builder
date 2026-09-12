@@ -9,8 +9,8 @@ on:
         default: ed86697b941090ce6c8fc956574f4655632255f3
         type: string
 
-# The workflow uses only explicit environment secrets. It does not need an
-# ambient repository GITHUB_TOKEN, so no repository permission is granted.
+# The workflow does not need an ambient repository GITHUB_TOKEN, so no
+# repository permission is granted.
 permissions: {}
 
 concurrency:
@@ -20,9 +20,6 @@ concurrency:
 jobs:
   build:
     name: private unsigned archive
-    # Configure this environment before dispatching a build. It keeps the
-    # read/write credentials unavailable until its protection rules pass.
-    environment: private-release
     runs-on: macos-26
     timeout-minutes: 60
     env:
@@ -50,7 +47,7 @@ jobs:
       - name: Checkout private source without publishing metadata
         env:
           SOURCE_REF: ${{ inputs.source_ref }}
-          SOURCE_TOKEN: ${{ secrets.SOURCE_ACCESS_TOKEN }}
+          SOURCE_TOKEN: ${{ secrets.GEFLECHTEQ }}
           GIT_CONFIG_NOSYSTEM: "1"
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_TERMINAL_PROMPT: "0"
@@ -323,7 +320,7 @@ jobs:
 
       - name: Publish and verify private Release asset
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_WRITE_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.GEFLECHTEQ }}
         shell: bash
         run: |
           set -euo pipefail
