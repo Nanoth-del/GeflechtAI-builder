@@ -1,0 +1,436 @@
+name: Generic iOS unsigned IPA builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: Private source repository in owner/repository form
+        required: true
+        type: string
+      source_ref:
+        description: Source branch, tag, or commit SHA
+        required: true
+        default: main
+        type: string
+      project_path:
+        description: Relative path to the .xcodeproj or .xcworkspace
+        required: true
+        type: string
+      scheme:
+        description: Xcode scheme to archive
+        required: true
+        type: string
+      app_name:
+        description: Application product name without the .app suffix
+        required: true
+        type: string
+      source_runtime:
+        description: Optional runtime preparation mode
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - none
+          - mlx
+          - llama
+      release_repository:
+        description: Optional Release repository; defaults to the source repository
+        required: false
+        type: string
+      publish_release:
+        description: Publish the unsigned IPA to a prerelease
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generic-ios-builder-${{ inputs.source_repository }}-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout private source without publishing metadata
+        env:
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_TOKEN: ${{ secrets.SOURCE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          checkout_log="$RUNNER_TEMP/generic-ios-checkout.log"
+          source_path="$GITHUB_WORKSPACE/private-source"
+
+          if [[ -z "$SOURCE_TOKEN" ]]; then
+            echo "::error::SOURCE_ACCESS_TOKEN is not configured."
+            exit 1
+          fi
+
+          if [[ ! "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::source_repository must use owner/repository form."
+            exit 1
+          fi
+
+          if [[ ! "$SOURCE_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$SOURCE_REF" == -* ]]; then
+            echo "::error::source_ref contains unsupported characters."
+            exit 1
+          fi
+
+          echo "::add-mask::$SOURCE_TOKEN"
+          auth_header="$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')"
+
+          rm -rf "$source_path"
+          mkdir -p "$source_path"
+
+          if ! git -C "$source_path" init -q >"$checkout_log" 2>&1; then
+            echo "::error::Private source initialization failed. Detailed output was withheld."
+            exit 1
+          fi
+
+          if ! git -C "$source_path" remote add origin \
+            "https://github.com/$SOURCE_REPOSITORY.git" >>"$checkout_log" 2>&1; then
+            echo "::error::Private source configuration failed. Detailed output was withheld."
+            exit 1
+          fi
+
+          if ! git -C "$source_path" \
+            -c "http.extraheader=AUTHORIZATION: basic $auth_header" \
+            fetch --no-tags --prune --depth=1 origin "$SOURCE_REF" >>"$checkout_log" 2>&1 || \
+             ! git -C "$source_path" checkout --detach --quiet FETCH_HEAD >>"$checkout_log" 2>&1; then
+            echo "::error::Private source checkout failed. Detailed output was withheld."
+            exit 1
+          fi
+
+          git -C "$source_path" config user.name "github-actions[bot]"
+          git -C "$source_path" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          unset SOURCE_TOKEN auth_header
+          echo "Private source checkout succeeded."
+
+      - name: Validate project inputs privately
+        id: project
+        env:
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          SCHEME: ${{ inputs.scheme }}
+          APP_NAME: ${{ inputs.app_name }}
+          SOURCE_RUNTIME: ${{ inputs.source_runtime }}
+          RELEASE_REPOSITORY: ${{ inputs.release_repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$PROJECT_PATH" in
+            ''|/*|*'..'*|*\\*)
+              echo "::error::project_path must be a relative path inside the source repository."
+              exit 1
+              ;;
+          esac
+
+          if [[ "$PROJECT_PATH" != *.xcodeproj && "$PROJECT_PATH" != *.xcworkspace ]]; then
+            echo "::error::project_path must end in .xcodeproj or .xcworkspace."
+            exit 1
+          fi
+
+          if [[ ! -d "private-source/$PROJECT_PATH" ]]; then
+            echo "::error::The requested Xcode project path was not found."
+            exit 1
+          fi
+
+          if [[ -z "$SCHEME" || "$SCHEME" == *$'\n'* || "$SCHEME" == *$'\r'* ]]; then
+            echo "::error::scheme is required and must be a single line."
+            exit 1
+          fi
+
+          if [[ -z "$APP_NAME" || "$APP_NAME" == *$'\n'* || "$APP_NAME" == *$'\r'* || \
+                "$APP_NAME" == */* || "$APP_NAME" == *\\* || "$APP_NAME" == *'..'* ]]; then
+            echo "::error::app_name contains unsupported characters."
+            exit 1
+          fi
+
+          if [[ "$SOURCE_RUNTIME" != auto && "$SOURCE_RUNTIME" != none && \
+                "$SOURCE_RUNTIME" != mlx && "$SOURCE_RUNTIME" != llama ]]; then
+            echo "::error::source_runtime is unsupported."
+            exit 1
+          fi
+
+          release_repository="${RELEASE_REPOSITORY:-$SOURCE_REPOSITORY}"
+          if [[ ! "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::release_repository must use owner/repository form."
+            exit 1
+          fi
+
+          source_runtime="$SOURCE_RUNTIME"
+          if [[ "$source_runtime" == auto ]]; then
+            if [[ -f private-source/scripts/prepare-llama.sh ]]; then
+              source_runtime=llama
+            elif grep -R -q 'mlx-swift' "private-source/$PROJECT_PATH"; then
+              source_runtime=mlx
+            else
+              source_runtime=none
+            fi
+          fi
+
+          project_kind=project
+          if [[ "$PROJECT_PATH" == *.xcworkspace ]]; then
+            project_kind=workspace
+          fi
+
+          echo "project_kind=$project_kind" >>"$GITHUB_OUTPUT"
+          echo "source_runtime=$source_runtime" >>"$GITHUB_OUTPUT"
+          echo "release_repository=$release_repository" >>"$GITHUB_OUTPUT"
+          echo "Project input validation succeeded."
+
+      - name: Validate Xcode toolchain privately
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          toolchain_log="$RUNNER_TEMP/generic-ios-toolchain.log"
+
+          if ! xcodebuild -version >"$toolchain_log" 2>&1; then
+            echo "::error::Xcode toolchain validation failed. Detailed output was withheld."
+            exit 1
+          fi
+
+          xcode_major="$(awk '/Xcode/{split($2, parts, "."); print parts[1]}' "$toolchain_log")"
+          if [[ "${xcode_major:-0}" -lt 26 ]]; then
+            echo "::error::Xcode 26 or newer is required."
+            exit 1
+          fi
+
+          if ! swift --version >>"$toolchain_log" 2>&1; then
+            echo "::error::Swift toolchain validation failed. Detailed output was withheld."
+            exit 1
+          fi
+
+          echo "Toolchain validation succeeded."
+
+      - name: Prepare llama.cpp runtime
+        if: steps.project.outputs.source_runtime == 'llama'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          runtime_log="$RUNNER_TEMP/generic-ios-llama.log"
+          if [[ ! -x scripts/prepare-llama.sh && ! -f scripts/prepare-llama.sh ]]; then
+            echo "::error::The selected source does not provide scripts/prepare-llama.sh."
+            exit 1
+          fi
+
+          if ! ./scripts/prepare-llama.sh ios-device >"$runtime_log" 2>&1; then
+            echo "::error::llama.cpp preparation failed. Detailed output was withheld."
+            exit 1
+          fi
+
+          echo "llama.cpp preparation succeeded."
+
+      - name: Resolve Swift packages
+        env:
+          PROJECT_PATH: ${{ inputs.project_path }}
+          SCHEME: ${{ inputs.scheme }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          resolve_log="$RUNNER_TEMP/generic-ios-resolve.log"
+          if [[ "$PROJECT_PATH" == *.xcworkspace ]]; then
+            target_args=(-workspace "$PROJECT_PATH")
+          else
+            target_args=(-project "$PROJECT_PATH")
+          fi
+
+          if ! xcodebuild \
+            "${target_args[@]}" \
+            -scheme "$SCHEME" \
+            -resolvePackageDependencies \
+            -skipMacroValidation \
+            -skipPackagePluginValidation >"$resolve_log" 2>&1; then
+            echo "::error::Swift package resolution failed. Detailed output was withheld."
+            exit 1
+          fi
+
+          echo "Swift package resolution succeeded."
+
+      - name: Clean Xcode project
+        env:
+          PROJECT_PATH: ${{ inputs.project_path }}
+          SCHEME: ${{ inputs.scheme }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clean_log="$RUNNER_TEMP/generic-ios-clean.log"
+          derived_data="$RUNNER_TEMP/GenericIOS-DerivedData"
+          if [[ "$PROJECT_PATH" == *.xcworkspace ]]; then
+            target_args=(-workspace "$PROJECT_PATH")
+          else
+            target_args=(-project "$PROJECT_PATH")
+          fi
+
+          if ! xcodebuild \
+            "${target_args[@]}" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$derived_data" \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            clean >"$clean_log" 2>&1; then
+            echo "::error::Xcode clean failed. Detailed output was withheld."
+            exit 1
+          fi
+
+          echo "Xcode clean succeeded."
+
+      - name: Build fresh unsigned archive
+        env:
+          PROJECT_PATH: ${{ inputs.project_path }}
+          SCHEME: ${{ inputs.scheme }}
+          APP_NAME: ${{ inputs.app_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_log="$RUNNER_TEMP/generic-ios-xcodebuild.log"
+          archive_path="$RUNNER_TEMP/GenericIOS.xcarchive"
+          derived_data="$RUNNER_TEMP/GenericIOS-DerivedData"
+
+          if [[ "$PROJECT_PATH" == *.xcworkspace ]]; then
+            target_args=(-workspace "$PROJECT_PATH")
+          else
+            target_args=(-project "$PROJECT_PATH")
+          fi
+
+          rm -rf "$archive_path"
+
+          if ! xcodebuild \
+            "${target_args[@]}" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$archive_path" \
+            -derivedDataPath "$derived_data" \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            archive >"$build_log" 2>&1; then
+            diagnostics="$(
+              {
+                grep -E '(^| )((fatal )?error:)' "$build_log" || true
+              } | sed -E 's#^.*(fatal error:|error:)#\1#' \
+                | sed -E 's#(private-source|/Users/[^: ]+|/home/runner/[^: ]+)[^: ]*#<redacted>#g' \
+                | awk 'length($0) <= 240 { print } length($0) > 240 { print substr($0, 1, 240) }' \
+                | head -20
+            )"
+
+            if [[ -n "$diagnostics" ]]; then
+              echo "::error::iOS archive failed. Sanitized diagnostics:"
+              while IFS= read -r diagnostic; do
+                echo "diagnostic: $diagnostic"
+              done <<<"$diagnostics"
+            else
+              echo "::error::iOS archive failed. Detailed compiler output was withheld."
+            fi
+            exit 1
+          fi
+
+          test -d "$archive_path/Products/Applications/$APP_NAME.app"
+          echo "iOS archive succeeded."
+
+      - name: Package unsigned IPA
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app_path="$RUNNER_TEMP/GenericIOS.xcarchive/Products/Applications/$APP_NAME.app"
+          ipa_root="$RUNNER_TEMP/generic-ios-ipa"
+          ipa_path="$RUNNER_TEMP/${APP_NAME}-unsigned.ipa"
+
+          test -d "$app_path"
+          rm -rf "$ipa_root"
+          rm -f "$ipa_path"
+          mkdir -p "$ipa_root/Payload"
+
+          ditto "$app_path" "$ipa_root/Payload/$APP_NAME.app"
+          (
+            cd "$ipa_root"
+            ditto -c -k --sequesterRsrc --keepParent Payload "$ipa_path"
+          )
+
+          unzip -l "$ipa_path" | grep -q "Payload/$APP_NAME.app/"
+          echo "Unsigned IPA packaged successfully."
+
+      - name: Verify source revision privately
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_sha="$(git -C private-source rev-parse HEAD)"
+          if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Source revision verification failed."
+            exit 1
+          fi
+          echo "Source revision verification succeeded."
+
+      - name: Publish IPA to Release
+        if: inputs.publish_release
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_ACCESS_TOKEN }}
+          RELEASE_REPOSITORY: ${{ steps.project.outputs.release_repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$RELEASE_TOKEN" ]]; then
+            echo "::error::RELEASE_ACCESS_TOKEN is not configured."
+            exit 1
+          fi
+
+          echo "::add-mask::$RELEASE_TOKEN"
+          source_sha="$(git -C private-source rev-parse HEAD)"
+          short_sha="${source_sha:0:12}"
+          release_tag="generic-builder-${GITHUB_RUN_NUMBER}-${short_sha}"
+          release_log="$RUNNER_TEMP/generic-ios-release.log"
+
+          if ! GH_TOKEN="$RELEASE_TOKEN" gh release create "$release_tag" \
+            "$RUNNER_TEMP/${APP_NAME}-unsigned.ipa" \
+            --repo "$RELEASE_REPOSITORY" \
+            --target "$source_sha" \
+            --title "$APP_NAME $release_tag" \
+            --notes "Unsigned iOS IPA built from source ${short_sha}. Re-sign before installation on a physical iPhone." \
+            --prerelease >"$release_log" 2>&1; then
+            echo "::error::Release publication failed. Detailed output was withheld."
+            exit 1
+          fi
+
+          unset RELEASE_TOKEN
+          echo "Release published successfully."
+
+      - name: Remove private source and build products
+        if: always()
+        shell: bash
+        run: |
+          rm -rf private-source
+          rm -rf "$RUNNER_TEMP/GenericIOS.xcarchive"
+          rm -rf "$RUNNER_TEMP/GenericIOS-DerivedData"
+          rm -rf "$RUNNER_TEMP/generic-ios-ipa"
+          rm -f "$RUNNER_TEMP"/GenericIOS-*.ipa
+          rm -f "$RUNNER_TEMP/generic-ios-"*.log
