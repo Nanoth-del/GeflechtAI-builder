@@ -238,6 +238,7 @@ jobs:
         env:
           PROJECT_PATH: ${{ inputs.project_path }}
           SCHEME: ${{ inputs.scheme }}
+        working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
@@ -285,6 +286,7 @@ jobs:
         env:
           PROJECT_PATH: ${{ inputs.project_path }}
           SCHEME: ${{ inputs.scheme }}
+        working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
@@ -320,6 +322,7 @@ jobs:
           PROJECT_PATH: ${{ inputs.project_path }}
           SCHEME: ${{ inputs.scheme }}
           APP_NAME: ${{ inputs.app_name }}
+        working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
